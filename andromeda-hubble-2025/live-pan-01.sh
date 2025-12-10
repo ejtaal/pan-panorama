@@ -6,13 +6,18 @@ export LD_LIBRARY_PATH=/usr/local/lib
 
 DEBUG=n
 
+MAGICK="firejail 
+    --noprofile 
+    --whitelist=~/repos/github/ejtaal/pan-panorama/andromeda-hubble-2025
+    --whitelist=~/Downloads
+    --appimage $HOME/Downloads/magick.appimage"
 # Oh how much I hate imagemagick for giving random results when disk is full !!!!1111
 rm -f /tmp/magick-*
 
 
 # Largest Hubble M31 panorama mosaic:
 # https://science.nasa.gov/mission/hubble/science/explore-the-night-sky/hubble-messier-catalog/messier-31/
-FULL="Hubble_M31Mosaic_2025_42208x9870_STScI-01JGY8MZB6RAYKZ1V4CHGN37Q6.jpg"
+FULL=~/Downloads/"Hubble_M31Mosaic_2025_42208x9870_STScI-01JGY8MZB6RAYKZ1V4CHGN37Q6.jpg"
 
 COORDS=$'11400 2450 M32
 5300 7235 NGC 206
@@ -54,6 +59,12 @@ COORDS=$'11400 2450 M32
 30000 7660 Very cool region 6
 25720 6700 Very cool region 7
 0 0 Andromeda Galaxy (M31)'
+
+COORDS=$'11400 2450 M32
+5300 7235 NGC 206
+0 0 Andromeda Galaxy (M31)'
+
+# TODO:  create annotated images based on astrometry from the above coords
 
 IMG_W=$(identify -ping "$FULL" | perl -pe 's/.* JPEG (\d+)x(\d+).*/\1/')
 IMG_H=$(identify -ping "$FULL" | perl -pe 's/.* JPEG (\d+)x(\d+).*/\2/')
@@ -101,10 +112,13 @@ max_steps=10000
 # }" | bc -l)
 
 SECONDS_PAUSE=1
+
 step_size=0.1
+# step_size=0.02
 # step_size=0.01
+step_size=0.003
 # Youtube 13 min: 0.005
-step_size=0.007
+# step_size=0.007
 SECONDS_PAUSE=5
 
 SIN_NOS=$(echo "
@@ -134,6 +148,14 @@ SCRIPT_FILE="/dev/null"
 SCRIPT_FILE="output.mgk"
 
 > "$SCRIPT_FILE"
+
+WRITE_STATEMENT="
+        -depth 8
+        +write rgb:- 
+        "
+        # -quality 1
+        # +write png:- 
+        # +write bmp:- 
 
 # echo "$COORDS" \
 #     | grep . \
@@ -167,6 +189,8 @@ while read TARGET_X TARGET_Y DESC; do
     # for cur_step in $SIN_NOS {1000..1100}; do
     EXTRAFRAMES=$((SECONDS_PAUSE*30))
 
+
+
     for cur_step in $SIN_NOS $(seq $max_steps $((max_steps+EXTRAFRAMES))); do
 
         if [ "$DEBUG" = y -a "$cur_step" = "$last_step" ]; then
@@ -187,14 +211,14 @@ while read TARGET_X TARGET_Y DESC; do
             echo "
             \(
                 mpr:last_img
-                +write bmp:- 
+                $WRITE_STATEMENT
                 +delete 
             \)" | cat >> "$SCRIPT_FILE"
             continue
         fi
 
         if [ $cur_step -lt $((max_steps/2)) ]; then
-            cur_desc="# $COORDS_CUR/$COORDS_NUM: $LAST_DESC @ ${TARGET_X}x${TARGET_Y}"
+            cur_desc="# $COORDS_CUR/$COORDS_NUM: $LAST_DESC @ ${LAST_TARGET_X}x${LAST_TARGET_Y}"
         else
             cur_desc="# $COORDS_CUR/$COORDS_NUM: $DESC @ ${TARGET_X}x${TARGET_Y}"
         fi
@@ -282,23 +306,28 @@ while read TARGET_X TARGET_Y DESC; do
         # +write "debug/pan_${cur_step}.jpg" +delete \)
         # )
 
+        frame_file="$(printf "frames/frame-%03d-%06d-of-%06d.png" ${COORDS_CUR} ${cur_step} ${max_steps})"
         echo "
         \( mpr:$source -crop \"$crop_box\" +repage -resize '1920x1080!' +repage
         \( 
             mpr:XY_small \) 
             -compose over -layers merge
             +repage	
+            -family 'Liberation Mono'
             -stroke white -fill white -undercolor '#0008' -annotate +10+10 \"$label\"
-            +repage	
+            +repage
             -stroke red -strokewidth 1 -fill none -draw \"$rect\"
             +write mpr:last_img
             +delete 
         \)
         \(
             mpr:last_img
-            +write bmp:- 
+            -write $frame_file
+            $WRITE_STATEMENT
             +delete 
         \)" | cat >> "$SCRIPT_FILE"
+            # +write bmp:- 
+            # -write $frame_file
 
 
         last_step="$cur_step"
@@ -363,7 +392,13 @@ exit 8
             # -gravity northwest +repage \
         # -verbose \
 	# echo "${STUFF[@]}" | 
-    magick \
+
+    FFMPEG_BANNER="-hide_banner"
+    if [ "$DEBUG" = y ]; then
+        FFMPEG_BANNER="hide_banner"
+    fi
+    
+    $MAGICK \
             \( "$FULL" -gravity west -background black -extent "${IMG_W}x${IMG_ASPECT_H}" \
             -write mpr:XY_canvas +delete \) \
             -gravity northwest \
@@ -392,11 +427,60 @@ exit 8
 	# | tee output.raw \
 
 } \
-    | ffmpeg -hide_banner \
-	-i -  \
-    -c:v libx264 -preset slow -profile:v high -crf 18 -coder 1 -pix_fmt yuv420p -movflags +faststart -g 30 -bf 2 -c:a aac -b:a 384k -profile:a aac_low \
-    -filter_complex 'tmix=frames=1' \
-	output.mp4
+    | ffmpeg $FFMPEG_BANNER \
+    -framerate 60 \
+    -f rawvideo -pix_fmt rgb24 -s 1920x1080 -i - \
+    -vf yadif,format=yuv420p -force_key_frames "expr:gte(t,n_forced/2)" -c:v libx264 \
+    -crf 18 -bf 2 -c:a aac -q:a 1 -ac 2 -ar 48000 -use_editlist 0 -movflags +faststart \
+    debug-output-01.mp4 \
+    && /usr/bin/vlc ./debug-output-01.mp4
+
+# next thing to try
+# RGB:-
+# | ffmpeg -s "$videoRes" -f rawvideo -pix\_fmt rgb24 -framerate "$frameRate" -i - "$outVideo"
+
+# Youtube 
+# ffmpeg -i in.mp4 -vf yadif,format=yuv420p -force_key_frames "expr:gte(t,n_forced/2)" -c:v libx264 -crf 18 -bf 2 -c:a aac -q:a 1 -ac 2 -ar 48000 -use_editlist 0 -movflags +faststart out.mp4
+
+# -vf specifies video filters
+# yadif will deinterlace videos if they're interlaced.
+# format=yuv420p will produce pixel format with 4:2:0 chroma subsampling.
+# -force_key_frames "expr:gte(t,n_forced/2)" will place keyframes every half-second, so that will be the GOP size.
+# -c:v libx264 will use the x264 encoder to produce a H264 video stream.
+# -crf 18 will produce a visually lossless file. Better than setting a bitrate manually.
+# -bf 2 will limit consecutive B-frames to 2
+# -c:a aac will use the native encoder to produce an AAC audio stream.
+# -q:a 1 sets the highest quality for the audio. Better than setting a bitrate manually.
+# -ac 2 rematrixes audio to stereo.
+# -ar 48000 resamples audio to 48000 Hz.
+# -use_editlist 0 avoids writing edit lists.
+# -movflags +faststart places moov atom/box at front of the output file.
+
+
+    # -profile:v high -preset slow -c:v libx264  -crf 18 -coder 1 -pix_fmt yuv420p -movflags +faststart -g 30 -bf 2 -c:a aac -b:a 384k -profile:a aac_low \
+
+    #  \
+    # && mv -vf ./debug-output-01.mp4 ./debug-output-01.mp4.bak
+
+    # -filter_complex 'tmix=frames=1' \
+    # | ffmpeg $FFMPEG_BANNER \
+	# -i -  \
+	# -f mjpeg \
+	# - \
+
+
+	# | /usr/bin/vlc --play-and-exit -
+
+    # | ffmpeg $FFMPEG_BANNER \
+	# -i -  \
+    # -c:v libx264 -preset slow -profile:v high -crf 18 -coder 1 -pix_fmt yuv420p -movflags +faststart -g 30 -bf 2 -c:a aac -b:a 384k -profile:a aac_low \
+    # -filter_complex 'tmix=frames=1' \
+    # -r 24 -i -  \
+	# -f mjpeg \
+    # output.mp4
+	# - \
+	
+    # output.mp4
 
     # -filter_complex 'tmix=frames=2' \
     # -filter_complex 'tmix=frames=2:weights="3 1"' \
